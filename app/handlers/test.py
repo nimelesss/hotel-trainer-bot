@@ -4,12 +4,17 @@ import logging
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    Message,
+    ReplyKeyboardRemove,
+)
 
 from app.db.repositories.attempts_repo import AttemptsRepo
 from app.db.repositories.events_repo import EventsRepo
 from app.db.repositories.questions_repo import QuestionsRepo
-from app.keyboards.main_menu import MODE_BY_BUTTON
+from app.keyboards.main_menu import MODE_BY_BUTTON, main_menu_kb
 from app.keyboards.test_kb import answer_kb, next_question_kb
 from app.services.test_service import TestService
 from app.states.test_states import QuizSG
@@ -79,9 +84,19 @@ async def start_test_via_button(
             "per_topic": {},
         }
     )
+    # Скрываем нижнюю клавиатуру на время теста, чтобы случайно не сбить прогресс.
+    # Возвращается в finish_test / cancel_test / cmd_cancel.
+    await message.answer(
+        f"Начинаю: {message.text}.\n"
+        "Чтобы прервать — кнопка «Прекратить тест» под вопросом.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
     view = await _build_question_view(state, questions_repo)
     if view is None:
-        await message.answer("Не удалось начать тест: вопрос не найден.")
+        await message.answer(
+            "Не удалось начать тест: вопрос не найден.",
+            reply_markup=main_menu_kb(),
+        )
         await state.clear()
         return
     text, kb = view
@@ -171,6 +186,7 @@ async def next_question(
         except Exception:
             pass
         await state.clear()
+        await callback.message.answer("Вернулся в главное меню.", reply_markup=main_menu_kb())
         await callback.answer()
         return
     text, kb = view
@@ -208,10 +224,13 @@ async def finish_test(
 
     text = summary_text(mode, correct, total, per_topic)
     await state.clear()
+    # Убираем inline-кнопки с последнего разбора, текст оставляем.
     try:
-        await callback.message.edit_text(text, reply_markup=None)
+        await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
-        await callback.message.answer(text)
+        pass
+    # Итог + возвращаем нижнюю клавиатуру.
+    await callback.message.answer(text, reply_markup=main_menu_kb())
     await callback.answer()
 
 
@@ -227,7 +246,8 @@ async def cancel_test(
     await attempts_repo.abandon_active_for_user(callback.from_user.id)
     await state.clear()
     try:
-        await callback.message.edit_text(CANCELLED, reply_markup=None)
+        await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
-        await callback.message.answer(CANCELLED)
+        pass
+    await callback.message.answer(CANCELLED, reply_markup=main_menu_kb())
     await callback.answer()
