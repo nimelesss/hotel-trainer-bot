@@ -70,6 +70,7 @@ copy .env.example .env
 - `TELEGRAM_BOT_TOKEN` — токен из [@BotFather](https://t.me/BotFather).
 - `ADMIN_TELEGRAM_ID` — твой Telegram ID (узнать у [@userinfobot](https://t.me/userinfobot)).
 - `LAW_BASE_DATE` — дата актуальности правовой базы для дисклеймера.
+- `PROXY_URL` *(опционально)* — HTTPS-прокси, если хостинг блокирует api.telegram.org (типично для VPS в РФ). Формат: `http://user:pass@host:port`. Оставь пустым, если прокси не нужен.
 
 ### 3. Запуск
 

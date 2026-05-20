@@ -5,6 +5,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -45,8 +46,12 @@ async def main() -> None:
             users_repo, events_repo, questions_repo, attempts_repo, reports_repo
         )
 
+        session = AiohttpSession(proxy=config.proxy_url) if config.proxy_url else None
+        if config.proxy_url:
+            log.info("Using HTTPS proxy for Telegram API")
         bot = Bot(
             config.bot_token,
+            session=session,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
         dp = Dispatcher(storage=MemoryStorage())

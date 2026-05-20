@@ -16,6 +16,7 @@ class Config:
     seed_path: Path
     law_base_date: str
     log_level: str
+    proxy_url: str | None
 
     @classmethod
     def load(cls, env_file: str | None = None) -> "Config":
@@ -40,6 +41,8 @@ class Config:
         if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             log_level = "INFO"
 
+        proxy_url = os.getenv("PROXY_URL", "").strip() or None
+
         return cls(
             bot_token=bot_token,
             admin_id=admin_id,
@@ -47,6 +50,7 @@ class Config:
             seed_path=seed_path,
             law_base_date=law_base_date,
             log_level=log_level,
+            proxy_url=proxy_url,
         )
 
 
