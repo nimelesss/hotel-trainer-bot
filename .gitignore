@@ -1,0 +1,48 @@
+# Secrets
+.env
+*.env
+!.env.example
+
+# SQLite
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/bot.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual envs
+venv/
+env/
+.venv/
+.env/
+
+# IDE / tooling
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
