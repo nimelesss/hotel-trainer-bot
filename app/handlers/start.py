@@ -9,7 +9,7 @@ from aiogram.types import Message
 
 from app.db.repositories.attempts_repo import AttemptsRepo
 from app.keyboards.main_menu import main_menu_kb
-from app.utils.texts import CANCELLED, HELP, MAIN_MENU_TITLE, welcome
+from app.utils.texts import CANCELLED, HELP, welcome
 
 log = logging.getLogger(__name__)
 router = Router(name="start")
@@ -28,8 +28,7 @@ async def cmd_start(
     await state.clear()
     await attempts_repo.abandon_active_for_user(user.id)
     name = user.first_name or "коллега"
-    await message.answer(welcome(name, law_base_date))
-    await message.answer(MAIN_MENU_TITLE, reply_markup=main_menu_kb())
+    await message.answer(welcome(name, law_base_date), reply_markup=main_menu_kb())
 
 
 @router.message(Command("help"))

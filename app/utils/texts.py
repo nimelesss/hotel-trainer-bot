@@ -37,6 +37,9 @@ MODE_LABELS = {
     "mistakes": f"Работа над ошибками (до {MISTAKES_SIZE})",
 }
 
+BTN_STATS = "Моя статистика"
+BTN_ABOUT = "О боте"
+
 
 def question_header(index: int, total: int, topic: str) -> str:
     return f"<b>Вопрос {index}/{total}</b>  ·  <i>{topic}</i>"

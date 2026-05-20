@@ -33,6 +33,11 @@ env/
 *.swo
 .claude/
 
+# Local secrets / one-off deploy artefacts
+.proxies.txt
+.chosen_proxy.txt
+.deploy*.py
+
 # OS
 .DS_Store
 Thumbs.db

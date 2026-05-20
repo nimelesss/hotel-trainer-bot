@@ -4,18 +4,17 @@ import logging
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from app.db.repositories.attempts_repo import AttemptsRepo
 from app.db.repositories.events_repo import EventsRepo
 from app.db.repositories.questions_repo import QuestionsRepo
-from app.keyboards.main_menu import back_to_menu_kb, main_menu_kb
+from app.keyboards.main_menu import MODE_BY_BUTTON
 from app.keyboards.test_kb import answer_kb, next_question_kb
 from app.services.test_service import TestService
 from app.states.test_states import QuizSG
 from app.utils.texts import (
     CANCELLED,
-    MAIN_MENU_TITLE,
     NO_MISTAKES,
     NO_QUESTIONS,
     explanation_text,
@@ -28,25 +27,18 @@ log = logging.getLogger(__name__)
 router = Router(name="test")
 
 
-async def _send_current_question(
-    callback: CallbackQuery,
+async def _build_question_view(
     state: FSMContext,
     questions_repo: QuestionsRepo,
-) -> None:
+) -> tuple[str, InlineKeyboardMarkup] | None:
     data = await state.get_data()
     question_ids: list[int] = data["question_ids"]
     current_index: int = data["current_index"]
     total = len(question_ids)
     question = await questions_repo.get(question_ids[current_index])
     if question is None:
-        log.warning("Question %s not found, aborting test", question_ids[current_index])
-        await callback.message.edit_text(
-            "Вопрос пропал из базы. Возвращаемся в меню.",
-            reply_markup=back_to_menu_kb(),
-        )
-        await state.clear()
-        return
-
+        log.warning("Question %s not found", question_ids[current_index])
+        return None
     await state.update_data(current_question_id=question["id"])
     options = {
         "A": question["option_a"],
@@ -58,40 +50,25 @@ async def _send_current_question(
         f"{question_header(current_index + 1, total, question['topic'])}\n\n"
         f"{question_body(question['text'], options)}"
     )
-    try:
-        await callback.message.edit_text(text, reply_markup=answer_kb())
-    except Exception:
-        await callback.message.answer(text, reply_markup=answer_kb())
-    await state.set_state(QuizSG.in_progress)
+    return text, answer_kb()
 
 
-@router.callback_query(F.data.startswith("mode:"))
-async def start_test(
-    callback: CallbackQuery,
+@router.message(F.text.in_(MODE_BY_BUTTON))
+async def start_test_via_button(
+    message: Message,
     state: FSMContext,
     questions_repo: QuestionsRepo,
-    attempts_repo: AttemptsRepo,
     test_service: TestService,
 ) -> None:
-    if callback.message is None or callback.from_user is None:
-        await callback.answer()
+    if message.from_user is None:
         return
-    mode = callback.data.split(":", 1)[1]
-    if mode not in {"quick", "exam", "mistakes"}:
-        await callback.answer("Неизвестный режим", show_alert=True)
-        return
-
-    questions = await test_service.pick_questions(callback.from_user.id, mode)
+    mode = MODE_BY_BUTTON[message.text]
+    questions = await test_service.pick_questions(message.from_user.id, mode)
     if not questions:
         text = NO_MISTAKES if mode == "mistakes" else NO_QUESTIONS
-        try:
-            await callback.message.edit_text(text, reply_markup=back_to_menu_kb())
-        except Exception:
-            await callback.message.answer(text, reply_markup=back_to_menu_kb())
-        await callback.answer()
+        await message.answer(text)
         return
-
-    started = await test_service.start(callback.from_user.id, mode, questions)
+    started = await test_service.start(message.from_user.id, mode, questions)
     await state.set_state(QuizSG.in_progress)
     await state.set_data(
         {
@@ -99,11 +76,16 @@ async def start_test(
             "question_ids": started.question_ids,
             "current_index": 0,
             "mode": mode,
-            "per_topic": {},  # topic -> [correct, total]
+            "per_topic": {},
         }
     )
-    await _send_current_question(callback, state, questions_repo)
-    await callback.answer()
+    view = await _build_question_view(state, questions_repo)
+    if view is None:
+        await message.answer("Не удалось начать тест: вопрос не найден.")
+        await state.clear()
+        return
+    text, kb = view
+    await message.answer(text, reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("answer:"), QuizSG.in_progress)
@@ -182,7 +164,21 @@ async def next_question(
     if callback.message is None:
         await callback.answer()
         return
-    await _send_current_question(callback, state, questions_repo)
+    view = await _build_question_view(state, questions_repo)
+    if view is None:
+        try:
+            await callback.message.edit_text("Вопрос недоступен.", reply_markup=None)
+        except Exception:
+            pass
+        await state.clear()
+        await callback.answer()
+        return
+    text, kb = view
+    await state.set_state(QuizSG.in_progress)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb)
     await callback.answer()
 
 
@@ -213,9 +209,9 @@ async def finish_test(
     text = summary_text(mode, correct, total, per_topic)
     await state.clear()
     try:
-        await callback.message.edit_text(text, reply_markup=back_to_menu_kb())
+        await callback.message.edit_text(text, reply_markup=None)
     except Exception:
-        await callback.message.answer(text, reply_markup=back_to_menu_kb())
+        await callback.message.answer(text)
     await callback.answer()
 
 
@@ -231,9 +227,7 @@ async def cancel_test(
     await attempts_repo.abandon_active_for_user(callback.from_user.id)
     await state.clear()
     try:
-        await callback.message.edit_text(
-            f"{CANCELLED}\n\n{MAIN_MENU_TITLE}", reply_markup=main_menu_kb()
-        )
+        await callback.message.edit_text(CANCELLED, reply_markup=None)
     except Exception:
-        await callback.message.answer(CANCELLED, reply_markup=main_menu_kb())
+        await callback.message.answer(CANCELLED)
     await callback.answer()
