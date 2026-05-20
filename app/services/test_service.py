@@ -34,14 +34,20 @@ class TestService:
         self.attempts = attempts_repo
 
     async def pick_questions(
-        self, user_id: int, mode: str
+        self, user_id: int, mode: str, topic: str | None = None
     ) -> list[aiosqlite.Row]:
         if mode not in MODE_SIZES:
             raise ValueError(f"Unknown mode: {mode}")
         size = MODE_SIZES[mode]
         if mode == "mistakes":
-            return await self.questions.pick_user_mistakes(user_id, size)
-        return await self.questions.pick_random_active(size)
+            if topic is None:
+                return await self.questions.pick_user_mistakes(user_id, size)
+            return await self.questions.pick_user_mistakes_by_topic(
+                user_id, topic, size
+            )
+        if topic is None:
+            return await self.questions.pick_random_active(size)
+        return await self.questions.pick_random_active_by_topic(topic, size)
 
     async def start(
         self, user_id: int, mode: str, questions: Sequence[aiosqlite.Row]

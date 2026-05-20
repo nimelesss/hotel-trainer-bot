@@ -27,6 +27,33 @@ class QuestionsRepo:
         ) as cur:
             return list(await cur.fetchall())
 
+    async def pick_random_active_by_topic(
+        self, topic: str, limit: int
+    ) -> list[aiosqlite.Row]:
+        async with self.db.conn.execute(
+            """
+            SELECT * FROM questions
+            WHERE is_active = 1 AND topic = ?
+            ORDER BY RANDOM()
+            LIMIT ?
+            """,
+            (topic, limit),
+        ) as cur:
+            return list(await cur.fetchall())
+
+    async def list_topics_with_counts(self) -> list[tuple[str, int]]:
+        async with self.db.conn.execute(
+            """
+            SELECT topic, COUNT(*) AS cnt
+            FROM questions
+            WHERE is_active = 1
+            GROUP BY topic
+            ORDER BY topic
+            """
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(r["topic"], int(r["cnt"])) for r in rows]
+
     async def pick_user_mistakes(self, user_id: int, limit: int) -> list[aiosqlite.Row]:
         # Берём вопросы, по которым ПОСЛЕДНИЙ ответ пользователя был неверным.
         # Если потом он ответил правильно — вопрос из списка ошибок уходит.
@@ -48,6 +75,31 @@ class QuestionsRepo:
             LIMIT ?
             """,
             (user_id, limit),
+        ) as cur:
+            return list(await cur.fetchall())
+
+    async def pick_user_mistakes_by_topic(
+        self, user_id: int, topic: str, limit: int
+    ) -> list[aiosqlite.Row]:
+        async with self.db.conn.execute(
+            """
+            WITH last_per_question AS (
+                SELECT question_id, is_correct,
+                       ROW_NUMBER() OVER (PARTITION BY question_id ORDER BY answered_at DESC) AS rn
+                FROM events
+                WHERE user_id = ?
+            )
+            SELECT q.*
+            FROM questions q
+            JOIN last_per_question lpq ON lpq.question_id = q.id
+            WHERE lpq.rn = 1
+              AND lpq.is_correct = 0
+              AND q.is_active = 1
+              AND q.topic = ?
+            ORDER BY RANDOM()
+            LIMIT ?
+            """,
+            (user_id, topic, limit),
         ) as cur:
             return list(await cur.fetchall())
 

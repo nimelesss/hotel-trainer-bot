@@ -2,6 +2,19 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
+def topic_choice_kb(
+    mode: str, topics: list[tuple[str, int]]
+) -> InlineKeyboardMarkup:
+    """Inline-выбор темы: «Все темы (рандом)» + список тем с количеством + Отмена."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Все темы (рандом)", callback_data=f"topic:{mode}:all")
+    for idx, (topic, cnt) in enumerate(topics):
+        kb.button(text=f"{topic} ({cnt})", callback_data=f"topic:{mode}:{idx}")
+    kb.button(text="Отмена", callback_data="topic:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def answer_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for letter in ("A", "B", "C", "D"):

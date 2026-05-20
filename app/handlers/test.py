@@ -15,7 +15,7 @@ from app.db.repositories.attempts_repo import AttemptsRepo
 from app.db.repositories.events_repo import EventsRepo
 from app.db.repositories.questions_repo import QuestionsRepo
 from app.keyboards.main_menu import MODE_BY_BUTTON, main_menu_kb
-from app.keyboards.test_kb import answer_kb, next_question_kb
+from app.keyboards.test_kb import answer_kb, next_question_kb, topic_choice_kb
 from app.services.test_service import TestService
 from app.states.test_states import QuizSG
 from app.utils.texts import (
@@ -58,22 +58,100 @@ async def _build_question_view(
     return text, answer_kb()
 
 
+MODE_HUMAN_LABEL = {
+    "quick": "Быстрый тест",
+    "exam": "Экзамен",
+    "mistakes": "Работа над ошибками",
+}
+
+
 @router.message(F.text.in_(MODE_BY_BUTTON))
 async def start_test_via_button(
     message: Message,
     state: FSMContext,
     questions_repo: QuestionsRepo,
-    test_service: TestService,
 ) -> None:
+    """Тап на reply-кнопку режима → показать выбор темы."""
     if message.from_user is None:
         return
     mode = MODE_BY_BUTTON[message.text]
-    questions = await test_service.pick_questions(message.from_user.id, mode)
-    if not questions:
-        text = NO_MISTAKES if mode == "mistakes" else NO_QUESTIONS
-        await message.answer(text)
+    topics = await questions_repo.list_topics_with_counts()
+    if not topics:
+        await message.answer(NO_QUESTIONS)
         return
-    started = await test_service.start(message.from_user.id, mode, questions)
+    await state.set_state(QuizSG.choosing_topic)
+    await state.update_data(mode=mode, topics=[t[0] for t in topics])
+    label = MODE_HUMAN_LABEL.get(mode, mode)
+    await message.answer(
+        f"<b>{label}</b>\nВыбери тему:",
+        reply_markup=topic_choice_kb(mode, topics),
+    )
+
+
+@router.callback_query(F.data == "topic:cancel", QuizSG.choosing_topic)
+async def cancel_topic_choice(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    if callback.message is not None:
+        try:
+            await callback.message.edit_text("Выбор темы отменён.", reply_markup=None)
+        except Exception:
+            pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("topic:"), QuizSG.choosing_topic)
+async def on_topic_choice(
+    callback: CallbackQuery,
+    state: FSMContext,
+    questions_repo: QuestionsRepo,
+    test_service: TestService,
+) -> None:
+    if callback.message is None or callback.from_user is None:
+        await callback.answer()
+        return
+
+    parts = callback.data.split(":", 2)
+    if len(parts) < 3:
+        await callback.answer("Битый callback", show_alert=True)
+        return
+    mode = parts[1]
+    selector = parts[2]
+
+    data = await state.get_data()
+    saved_topics: list[str] = data.get("topics", [])
+
+    if selector == "all":
+        topic: str | None = None
+        topic_label = "все темы (рандом)"
+    else:
+        try:
+            idx = int(selector)
+        except ValueError:
+            await callback.answer("Битый callback", show_alert=True)
+            return
+        if not (0 <= idx < len(saved_topics)):
+            await callback.answer("Тема не найдена, открой меню заново.", show_alert=True)
+            return
+        topic = saved_topics[idx]
+        topic_label = topic
+
+    questions = await test_service.pick_questions(
+        callback.from_user.id, mode, topic
+    )
+    if not questions:
+        msg = NO_MISTAKES if mode == "mistakes" else NO_QUESTIONS
+        try:
+            await callback.message.edit_text(msg, reply_markup=None)
+        except Exception:
+            pass
+        await state.clear()
+        await callback.message.answer(
+            "Возвращаюсь в меню.", reply_markup=main_menu_kb()
+        )
+        await callback.answer()
+        return
+
+    started = await test_service.start(callback.from_user.id, mode, questions)
     await state.set_state(QuizSG.in_progress)
     await state.set_data(
         {
@@ -81,26 +159,39 @@ async def start_test_via_button(
             "question_ids": started.question_ids,
             "current_index": 0,
             "mode": mode,
+            "topic": topic,
             "per_topic": {},
         }
     )
-    # Скрываем нижнюю клавиатуру на время теста, чтобы случайно не сбить прогресс.
-    # Возвращается в finish_test / cancel_test / cmd_cancel.
-    await message.answer(
-        f"Начинаю: {message.text}.\n"
+
+    # Заменяем «Выбери тему» на «Тема: X» (без инлайн-клавиатуры).
+    try:
+        await callback.message.edit_text(
+            f"<b>{MODE_HUMAN_LABEL.get(mode, mode)}</b>\nТема: {topic_label}",
+            reply_markup=None,
+        )
+    except Exception:
+        pass
+
+    # Прячем нижнюю клавиатуру на время теста.
+    await callback.message.answer(
+        f"Начинаю — {len(questions)} вопрос(ов).\n"
         "Чтобы прервать — кнопка «Прекратить тест» под вопросом.",
         reply_markup=ReplyKeyboardRemove(),
     )
+
     view = await _build_question_view(state, questions_repo)
     if view is None:
-        await message.answer(
+        await callback.message.answer(
             "Не удалось начать тест: вопрос не найден.",
             reply_markup=main_menu_kb(),
         )
         await state.clear()
+        await callback.answer()
         return
     text, kb = view
-    await message.answer(text, reply_markup=kb)
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("answer:"), QuizSG.in_progress)
