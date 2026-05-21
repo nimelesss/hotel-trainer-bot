@@ -44,6 +44,7 @@ async def import_questions(
     items: list[dict],
     replace_demo: bool,
     deactivate_demo: bool,
+    replace_topics: bool,
 ) -> tuple[int, int]:
     if replace_demo:
         await db.conn.execute("DELETE FROM questions WHERE is_demo = 1")
@@ -53,6 +54,19 @@ async def import_questions(
         await db.conn.execute("UPDATE questions SET is_active = 0 WHERE is_demo = 1")
         await db.conn.commit()
         log.info("Demo questions deactivated")
+
+    if replace_topics:
+        # Деактивируем прежние активные вопросы тех тем, что есть в файле.
+        topics = sorted({item["topic"] for item in items if item.get("topic")})
+        if topics:
+            placeholders = ",".join("?" for _ in topics)
+            await db.conn.execute(
+                f"UPDATE questions SET is_active = 0 "
+                f"WHERE is_active = 1 AND topic IN ({placeholders})",
+                tuple(topics),
+            )
+            await db.conn.commit()
+            log.info("Deactivated previous active questions for topics: %s", topics)
 
     inserted = 0
     skipped = 0
@@ -110,6 +124,11 @@ def parse_args() -> argparse.Namespace:
         "--deactivate-demo", action="store_true",
         help="Перевести демо-вопросы в is_active=0, не удаляя",
     )
+    group.add_argument(
+        "--replace-topics", action="store_true",
+        help="Деактивировать прежние активные вопросы тех тем, что есть в файле, "
+             "перед импортом (для обновления темы новой версией)",
+    )
     return p.parse_args()
 
 
@@ -138,6 +157,7 @@ async def main() -> int:
             db, items,
             replace_demo=args.replace_demo,
             deactivate_demo=args.deactivate_demo,
+            replace_topics=args.replace_topics,
         )
     finally:
         await db.close()
