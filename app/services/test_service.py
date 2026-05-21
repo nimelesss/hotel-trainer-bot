@@ -7,12 +7,11 @@ import aiosqlite
 
 from app.db.repositories.attempts_repo import AttemptsRepo
 from app.db.repositories.questions_repo import QuestionsRepo
-from app.utils.texts import EXAM_SIZE, MISTAKES_SIZE, QUICK_TEST_SIZE
+from app.utils.texts import MISTAKES_SIZE, QUICK_TEST_SIZE
 
 
 MODE_SIZES = {
     "quick": QUICK_TEST_SIZE,
-    "exam": EXAM_SIZE,
     "mistakes": MISTAKES_SIZE,
 }
 

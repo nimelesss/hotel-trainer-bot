@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -14,11 +15,14 @@ from aiogram.types import (
 from app.db.repositories.attempts_repo import AttemptsRepo
 from app.db.repositories.events_repo import EventsRepo
 from app.db.repositories.questions_repo import QuestionsRepo
-from app.keyboards.main_menu import MODE_BY_BUTTON, main_menu_kb
+from app.keyboards.main_menu import main_menu_kb
 from app.keyboards.test_kb import answer_kb, next_question_kb, topic_choice_kb
 from app.services.test_service import TestService
 from app.states.test_states import QuizSG
 from app.utils.texts import (
+    BTN_MISTAKES,
+    BTN_QUICK_START,
+    BTN_TOPIC_TEST,
     CANCELLED,
     NO_MISTAKES,
     NO_QUESTIONS,
@@ -36,6 +40,11 @@ async def _build_question_view(
     state: FSMContext,
     questions_repo: QuestionsRepo,
 ) -> tuple[str, InlineKeyboardMarkup] | None:
+    """Готовит текст текущего вопроса с ПЕРЕМЕШАННЫМИ вариантами ответа.
+
+    Сохраняет в FSM `option_map`: отображаемая буква → оригинальная буква в БД.
+    Это убирает зависимость «правильный ответ всегда на одной позиции».
+    """
     data = await state.get_data()
     question_ids: list[int] = data["question_ids"]
     current_index: int = data["current_index"]
@@ -44,47 +53,130 @@ async def _build_question_view(
     if question is None:
         log.warning("Question %s not found", question_ids[current_index])
         return None
-    await state.update_data(current_question_id=question["id"])
-    options = {
-        "A": question["option_a"],
-        "B": question["option_b"],
-        "C": question["option_c"],
-        "D": question["option_d"],
-    }
+
+    originals = [
+        ("A", question["option_a"]),
+        ("B", question["option_b"]),
+        ("C", question["option_c"]),
+        ("D", question["option_d"]),
+    ]
+    random.shuffle(originals)
+    option_map: dict[str, str] = {}
+    display_options: dict[str, str] = {}
+    for i, (orig_letter, opt_text) in enumerate(originals):
+        disp = "ABCD"[i]
+        option_map[disp] = orig_letter
+        display_options[disp] = opt_text
+
+    await state.update_data(
+        current_question_id=question["id"],
+        option_map=option_map,
+    )
     text = (
         f"{question_header(current_index + 1, total, question['topic'])}\n\n"
-        f"{question_body(question['text'], options)}"
+        f"{question_body(question['text'], display_options)}"
     )
     return text, answer_kb()
 
 
-MODE_HUMAN_LABEL = {
-    "quick": "Быстрый тест",
-    "exam": "Экзамен",
-    "mistakes": "Работа над ошибками",
-}
+async def _launch_test(
+    answerable: Message,
+    user_id: int,
+    state: FSMContext,
+    test_service: TestService,
+    questions_repo: QuestionsRepo,
+    questions: list,
+    mode: str,
+) -> None:
+    """Создаёт попытку, прячет нижнюю клавиатуру и отправляет первый вопрос."""
+    started = await test_service.start(user_id, mode, questions)
+    await state.set_state(QuizSG.in_progress)
+    await state.set_data(
+        {
+            "attempt_id": started.attempt_id,
+            "question_ids": started.question_ids,
+            "current_index": 0,
+            "mode": mode,
+            "per_topic": {},
+        }
+    )
+    await answerable.answer(
+        f"Начинаю — {len(questions)} вопрос(ов).\n"
+        "Чтобы прервать — кнопка «Прекратить тест» под вопросом.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    view = await _build_question_view(state, questions_repo)
+    if view is None:
+        await answerable.answer(
+            "Не удалось начать тест: вопрос не найден.",
+            reply_markup=main_menu_kb(),
+        )
+        await state.clear()
+        return
+    text, kb = view
+    await answerable.answer(text, reply_markup=kb)
 
 
-@router.message(F.text.in_(MODE_BY_BUTTON))
-async def start_test_via_button(
+@router.message(F.text == BTN_QUICK_START)
+async def start_quick(
+    message: Message,
+    state: FSMContext,
+    questions_repo: QuestionsRepo,
+    test_service: TestService,
+) -> None:
+    """Быстрый старт — 10 случайных вопросов из всех тем, без выбора темы."""
+    if message.from_user is None:
+        return
+    questions = await test_service.pick_questions(message.from_user.id, "quick", None)
+    if not questions:
+        await message.answer(NO_QUESTIONS)
+        return
+    await _launch_test(
+        message, message.from_user.id, state, test_service, questions_repo,
+        questions, "quick",
+    )
+
+
+@router.message(F.text == BTN_MISTAKES)
+async def start_mistakes(
+    message: Message,
+    state: FSMContext,
+    questions_repo: QuestionsRepo,
+    test_service: TestService,
+) -> None:
+    """Работа над ошибками — вопросы с последним неверным ответом пользователя."""
+    if message.from_user is None:
+        return
+    questions = await test_service.pick_questions(
+        message.from_user.id, "mistakes", None
+    )
+    if not questions:
+        await message.answer(NO_MISTAKES)
+        return
+    await _launch_test(
+        message, message.from_user.id, state, test_service, questions_repo,
+        questions, "mistakes",
+    )
+
+
+@router.message(F.text == BTN_TOPIC_TEST)
+async def start_topic_test(
     message: Message,
     state: FSMContext,
     questions_repo: QuestionsRepo,
 ) -> None:
-    """Тап на reply-кнопку режима → показать выбор темы."""
+    """Тест по теме — показать список тем для выбора."""
     if message.from_user is None:
         return
-    mode = MODE_BY_BUTTON[message.text]
     topics = await questions_repo.list_topics_with_counts()
     if not topics:
         await message.answer(NO_QUESTIONS)
         return
     await state.set_state(QuizSG.choosing_topic)
-    await state.update_data(mode=mode, topics=[t[0] for t in topics])
-    label = MODE_HUMAN_LABEL.get(mode, mode)
+    await state.update_data(topics=[t[0] for t in topics])
     await message.answer(
-        f"<b>{label}</b>\nВыбери тему:",
-        reply_markup=topic_choice_kb(mode, topics),
+        "<b>Тест по теме</b>\nВыбери тему:",
+        reply_markup=topic_choice_kb(topics),
     )
 
 
@@ -110,38 +202,27 @@ async def on_topic_choice(
         await callback.answer()
         return
 
-    parts = callback.data.split(":", 2)
-    if len(parts) < 3:
-        await callback.answer("Битый callback", show_alert=True)
-        return
-    mode = parts[1]
-    selector = parts[2]
-
+    selector = callback.data.split(":", 1)[1] if ":" in callback.data else ""
     data = await state.get_data()
     saved_topics: list[str] = data.get("topics", [])
-
-    if selector == "all":
-        topic: str | None = None
-        topic_label = "все темы (рандом)"
-    else:
-        try:
-            idx = int(selector)
-        except ValueError:
-            await callback.answer("Битый callback", show_alert=True)
-            return
-        if not (0 <= idx < len(saved_topics)):
-            await callback.answer("Тема не найдена, открой меню заново.", show_alert=True)
-            return
-        topic = saved_topics[idx]
-        topic_label = topic
+    try:
+        idx = int(selector)
+    except ValueError:
+        await callback.answer("Битый callback", show_alert=True)
+        return
+    if not (0 <= idx < len(saved_topics)):
+        await callback.answer(
+            "Тема не найдена, открой меню заново.", show_alert=True
+        )
+        return
+    topic = saved_topics[idx]
 
     questions = await test_service.pick_questions(
-        callback.from_user.id, mode, topic
+        callback.from_user.id, "quick", topic
     )
     if not questions:
-        msg = NO_MISTAKES if mode == "mistakes" else NO_QUESTIONS
         try:
-            await callback.message.edit_text(msg, reply_markup=None)
+            await callback.message.edit_text(NO_QUESTIONS, reply_markup=None)
         except Exception:
             pass
         await state.clear()
@@ -151,46 +232,16 @@ async def on_topic_choice(
         await callback.answer()
         return
 
-    started = await test_service.start(callback.from_user.id, mode, questions)
-    await state.set_state(QuizSG.in_progress)
-    await state.set_data(
-        {
-            "attempt_id": started.attempt_id,
-            "question_ids": started.question_ids,
-            "current_index": 0,
-            "mode": mode,
-            "topic": topic,
-            "per_topic": {},
-        }
-    )
-
-    # Заменяем «Выбери тему» на «Тема: X» (без инлайн-клавиатуры).
     try:
         await callback.message.edit_text(
-            f"<b>{MODE_HUMAN_LABEL.get(mode, mode)}</b>\nТема: {topic_label}",
-            reply_markup=None,
+            f"<b>Тест по теме</b>\nТема: {topic}", reply_markup=None
         )
     except Exception:
         pass
-
-    # Прячем нижнюю клавиатуру на время теста.
-    await callback.message.answer(
-        f"Начинаю — {len(questions)} вопрос(ов).\n"
-        "Чтобы прервать — кнопка «Прекратить тест» под вопросом.",
-        reply_markup=ReplyKeyboardRemove(),
+    await _launch_test(
+        callback.message, callback.from_user.id, state, test_service,
+        questions_repo, questions, "quick",
     )
-
-    view = await _build_question_view(state, questions_repo)
-    if view is None:
-        await callback.message.answer(
-            "Не удалось начать тест: вопрос не найден.",
-            reply_markup=main_menu_kb(),
-        )
-        await state.clear()
-        await callback.answer()
-        return
-    text, kb = view
-    await callback.message.answer(text, reply_markup=kb)
     await callback.answer()
 
 
@@ -205,8 +256,8 @@ async def on_answer(
     if callback.message is None or callback.from_user is None:
         await callback.answer()
         return
-    selected = callback.data.split(":", 1)[1]
-    if selected not in {"A", "B", "C", "D"}:
+    selected_display = callback.data.split(":", 1)[1]
+    if selected_display not in {"A", "B", "C", "D"}:
         await callback.answer("Неизвестный вариант", show_alert=True)
         return
 
@@ -215,6 +266,7 @@ async def on_answer(
     question_ids: list[int] = data["question_ids"]
     current_index: int = data["current_index"]
     per_topic: dict = data.get("per_topic", {})
+    option_map: dict = data.get("option_map", {})
     total = len(question_ids)
 
     question = await questions_repo.get(question_ids[current_index])
@@ -222,12 +274,14 @@ async def on_answer(
         await callback.answer("Вопрос недоступен", show_alert=True)
         return
 
-    is_correct = question["correct_option"] == selected
+    # Отображаемая буква → оригинальная буква варианта в БД.
+    selected_original = option_map.get(selected_display, selected_display)
+    is_correct = question["correct_option"] == selected_original
     await events_repo.record(
         attempt_id=attempt_id,
         user_id=callback.from_user.id,
         question_id=question["id"],
-        selected_option=selected,
+        selected_option=selected_original,
         is_correct=is_correct,
     )
     if is_correct:
@@ -241,11 +295,16 @@ async def on_answer(
 
     new_index = current_index + 1
     is_last = new_index >= total
-    correct_letter = question["correct_option"]
-    correct_text = question[f"option_{correct_letter.lower()}"]
+    correct_original = question["correct_option"]
+    correct_text = question[f"option_{correct_original.lower()}"]
+    # Буква, под которой правильный ответ показан пользователю в этот раз.
+    correct_display = next(
+        (disp for disp, orig in option_map.items() if orig == correct_original),
+        correct_original,
+    )
     text = (
         f"{question_header(current_index + 1, total, topic)}\n\n"
-        f"{explanation_text(is_correct, correct_letter, correct_text, question['explanation'], question['law_reference'])}"
+        f"{explanation_text(is_correct, correct_display, correct_text, question['explanation'], question['law_reference'])}"
     )
 
     await state.update_data(
@@ -277,7 +336,9 @@ async def next_question(
         except Exception:
             pass
         await state.clear()
-        await callback.message.answer("Вернулся в главное меню.", reply_markup=main_menu_kb())
+        await callback.message.answer(
+            "Вернулся в главное меню.", reply_markup=main_menu_kb()
+        )
         await callback.answer()
         return
     text, kb = view
@@ -300,7 +361,6 @@ async def finish_test(
         return
     data = await state.get_data()
     attempt_id: int = data["attempt_id"]
-    mode: str = data.get("mode", "quick")
     question_ids: list[int] = data["question_ids"]
     per_topic_raw: dict = data.get("per_topic", {})
 
@@ -313,14 +373,12 @@ async def finish_test(
         (topic, vals[0], vals[1]) for topic, vals in sorted(per_topic_raw.items())
     ]
 
-    text = summary_text(mode, correct, total, per_topic)
+    text = summary_text(correct, total, per_topic)
     await state.clear()
-    # Убираем inline-кнопки с последнего разбора, текст оставляем.
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    # Итог + возвращаем нижнюю клавиатуру.
     await callback.message.answer(text, reply_markup=main_menu_kb())
     await callback.answer()
 
